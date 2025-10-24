@@ -1,0 +1,12 @@
+/* Custom styles for VFD Tool */
+.table-container {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.table-container thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1; /* Ensures header is rendered above scrolling content */
+    /* Bootstrap's .table-dark class will handle the background color */
+}

@@ -1,0 +1,32 @@
+{
+  "name": "vfd-controller",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "pkg . --targets latest-win-x64"
+  },
+  "bin": "server.js",
+  "pkg": {
+    "scripts": [
+      "node_modules/@serialport/bindings-cpp/build/Release/bindings.node"
+    ],
+    "assets": [
+      "public/**/*"
+    ],
+    "outputPath": "dist"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2",
+    "modbus-serial": "^8.0.23",
+    "open": "^10.1.0",
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}
