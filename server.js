@@ -22,11 +22,18 @@ app.get('/api/ports', async (req, res) => {
   }
 });
 
+app.get('/api/status', (req, res) => {
+  res.json({ 
+    isConnected: !!(modbusClient && modbusClient.isOpen),
+    port: modbusClient ? modbusClient.port : null
+  });
+});
+
 app.post('/api/connect', async (req, res) => {
   const { portPath, baudRate } = req.body;
 
   if (modbusClient) {
-    modbusClient.close(() => {});
+    await new Promise(resolve => modbusClient.close(resolve));
   }
 
   try {
@@ -67,22 +74,21 @@ app.post('/api/vfd', async (req, res) => {
   // Use a promise chain to lock serial access
   modbusLock = modbusLock.then(async () => {
     try {
+      if (!modbusClient || !modbusClient.isOpen) {
+         throw new Error("Modbus connection lost while waiting in queue.");
+      }
       modbusClient.setID(parseInt(slaveId, 10));
     let response;
 
     switch (action) {
       case 'get-live-status':
-
-        // FINAL ARCHITECTURE: The server now only fetches one part at a time, as requested by the client.
         const part = payload.part;
         let startAddress, length;
 
-        console.log("Polling: " + part)
-
         switch(part) {
-            case 1: startAddress = 3328; length = 4; break;   // 0x0D00: Freq, OutputFreq, Current, Speed
-            case 2: startAddress = 3332; length = 4; break;   // 0x0D04: Voltages, Temp
-            case 3: startAddress = 3336; length = 3; break;   // 0x0D08: Faults, etc
+            case 1: startAddress = 0; length = 4; break;   // Freq, Current, Speed
+            case 2: startAddress = 4; length = 4; break;   // Voltages, Temp
+            case 3: startAddress = 8; length = 3; break;   // PID, Fault
             default: throw new Error('Invalid data part requested.');
         }
 
@@ -91,7 +97,6 @@ app.post('/api/vfd', async (req, res) => {
         if (!response || !response.data) {
           throw new Error(`Invalid response for data part ${part}.`);
         }
-        // Simply send the raw data back. The client will handle it.
         res.json({ success: true, data: response.data, part: part });
         break;
 
