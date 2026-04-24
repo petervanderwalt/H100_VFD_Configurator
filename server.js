@@ -55,6 +55,8 @@ app.post('/api/disconnect', async (req, res) => {
   res.json({ success: true, message: 'Disconnected' });
 });
 
+let modbusLock = Promise.resolve();
+
 app.post('/api/vfd', async (req, res) => {
   if (!modbusClient || !modbusClient.isOpen) {
     return res.status(400).send({ error: 'Not connected. Please connect first.' });
@@ -62,8 +64,10 @@ app.post('/api/vfd', async (req, res) => {
 
   const { slaveId, action, payload } = req.body;
 
-  try {
-    modbusClient.setID(parseInt(slaveId, 10));
+  // Use a promise chain to lock serial access
+  modbusLock = modbusLock.then(async () => {
+    try {
+      modbusClient.setID(parseInt(slaveId, 10));
     let response;
 
     switch (action) {
@@ -76,9 +80,9 @@ app.post('/api/vfd', async (req, res) => {
         console.log("Polling: " + part)
 
         switch(part) {
-            case 1: startAddress = 0; length = 4; break;   // Freq, Current, Speed
-            case 2: startAddress = 4; length = 4; break;   // Voltages, Temp
-            case 3: startAddress = 8; length = 3; break;   // PID, Fault
+            case 1: startAddress = 3328; length = 4; break;   // 0x0D00: Freq, OutputFreq, Current, Speed
+            case 2: startAddress = 3332; length = 4; break;   // 0x0D04: Voltages, Temp
+            case 3: startAddress = 3336; length = 3; break;   // 0x0D08: Faults, etc
             default: throw new Error('Invalid data part requested.');
         }
 
@@ -129,6 +133,10 @@ app.post('/api/vfd', async (req, res) => {
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
+}).catch(err => {
+    // This catches errors in the lock chain itself if any
+    console.error("Critical Modbus Lock Error:", err);
+});
 });
 
 app.listen(port, () => {

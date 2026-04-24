@@ -149,6 +149,72 @@ $(document).ready(function() {
         { code: 'F199', address: '00C7', name: 'Keyboard UP.DOWN memory function selection', desc: '0: Not memorized, 1: Memorized.' },
     ];
 
+    let currentChart;
+    const maxDataPoints = 100;
+    let motorRatedCurrent = 1.0; // Default fallback (Amps)
+
+    function initGraph() {
+        const ctx = document.getElementById('currentGraph').getContext('2d');
+        currentChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [{
+                    label: 'Load (%)',
+                    data: Array(maxDataPoints).fill(0),
+                    borderColor: '#0dcaf0',
+                    backgroundColor: 'rgba(13, 202, 240, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    x: { display: false },
+                    y: { 
+                        beginAtZero: true,
+                        // Removed fixed max: 120 to allow auto-scaling if load is very low
+                        ticks: { 
+                            font: { size: 10 },
+                            callback: function(value) { return value + '%'; }
+                        }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: false }
+                }
+            }
+        });
+    }
+    initGraph();
+
+    let pollTimeout;
+    function startPolling() {
+        // Fetch the rated current (F142) once. User confirms 120 = 12A, so / 10.0
+        sendVfdCommand('read-holding-registers', { readAddress: '008E' }, (res) => {
+            if (res.success && res.data) {
+                motorRatedCurrent = res.data[0] / 10.0;
+                console.log("Motor Rated Current detected:", motorRatedCurrent, "A");
+            }
+            // Start recursive polling
+            if (pollTimeout) clearTimeout(pollTimeout);
+            pollTimeout = setTimeout(updateLiveStatus, 100);
+        });
+    }
+
+    function stopPolling() {
+        if (pollTimeout) {
+            clearTimeout(pollTimeout);
+            pollTimeout = null;
+        }
+    }
+
     // --- UI State Management ---
     function setUiConnected(isConnected) {
         if (isConnected) {
@@ -157,12 +223,14 @@ $(document).ready(function() {
             $('#disconnect-btn').prop('disabled', false);
             $('#port-select, #baud-rate').prop('disabled', true);
             $('.dashboard-controls').find('button, input').prop('disabled', false);
+            startPolling();
         } else {
             $('#connection-status').removeClass('bg-success').addClass('bg-secondary').text('Disconnected');
             $('#connect-btn').prop('disabled', false);
             $('#disconnect-btn').prop('disabled', true);
             $('#port-select, #baud-rate').prop('disabled', false);
             $('.dashboard-controls').find('button, input').prop('disabled', true);
+            stopPolling();
         }
     }
 
@@ -301,54 +369,71 @@ $(document).ready(function() {
     });
 
     // --- Live Status Polling ---
+    let isPolling = false;
     function updateLiveStatus() {
-    if ($('#connection-status').text() !== 'Connected') {
-        return;
+        if ($('#connection-status').text() !== 'Connected' || isPolling) {
+            if (pollTimeout) pollTimeout = setTimeout(updateLiveStatus, 100);
+            return;
+        }
+
+        isPolling = true;
+        const statusIndicator = $('#status-indicator');
+
+        const errorCb = (part) => {
+            isPolling = false;
+            statusIndicator.removeClass('bg-warning bg-success').addClass('bg-danger').text(`Error (Part ${part})`);
+            if (pollTimeout) pollTimeout = setTimeout(updateLiveStatus, 200); // Back off slightly on error
+        };
+
+        // --- THE WATERFALL ---
+        sendVfdCommand('get-live-status', { part: 1 }, (res1) => {
+            if (res1.success && res1.data) {
+                const rawCurrent = res1.data[2]; // Register 3330 (0x0D02)
+                const actualAmps = rawCurrent / 100.0; // 110 -> 1.10A (0.01A units)
+                const loadPercent = (actualAmps / (motorRatedCurrent || 1.0)) * 100;
+                
+                // Update UI for Part 1
+                $('#status-freq').text(`${(res1.data[0] / 10.0).toFixed(1)} Hz`);
+                $('#status-current').text(`${(actualAmps).toFixed(2)} A`); 
+                $('#status-speed').text(`${res1.data[3]} RPM`);
+
+                // Update Graph with Load Percentage
+                if (currentChart) {
+                    currentChart.data.datasets[0].data.push(loadPercent.toFixed(2));
+                    currentChart.data.datasets[0].data.shift();
+                    currentChart.update('none'); 
+                }
+
+                sendVfdCommand('get-live-status', { part: 2 }, (res2) => {
+                    if (res2.success && res2.data) {
+                        const actualVoltage = res2.data[0] / 10.0; // 0x0D04 Output Voltage
+                        const calculatedKW = (1.732 * actualVoltage * actualAmps) / 1000.0;
+
+                        $('#status-dc').text(`${(res2.data[1] / 10.0).toFixed(1)} V`); // 0x0D05 DC Bus
+                        $('#status-temp').text(`${res2.data[2]} °C`);
+                        $('#status-kw').text(`${calculatedKW.toFixed(3)} kW`);
+                        $('#status-load').text(`${loadPercent.toFixed(1)} %`);
+
+                        sendVfdCommand('get-live-status', { part: 3 }, (res3) => {
+                            isPolling = false;
+                            if (res3.success && res3.data) {
+                                const faultCode = res3.data[2];
+                                if (faultCode > 0) {
+                                    $('#status-fault').text(`Code ${faultCode}`).parent().show();
+                                } else {
+                                    $('#status-fault').parent().hide();
+                                }
+                                statusIndicator.removeClass('bg-warning bg-danger').addClass('bg-success').text('Live');
+                            } else { errorCb(3); }
+                            
+                            // Schedule NEXT poll only after this one is finished
+                            if (pollTimeout) pollTimeout = setTimeout(updateLiveStatus, 100);
+                        }, () => errorCb(3));
+                    } else { errorCb(2); }
+                }, () => errorCb(2));
+            } else { errorCb(1); }
+        }, () => errorCb(1));
     }
-
-    const statusIndicator = $('#status-indicator');
-    statusIndicator.removeClass('bg-danger bg-success').addClass('bg-warning').text('Polling...');
-
-    const errorCb = (part) => {
-        statusIndicator.removeClass('bg-warning bg-success').addClass('bg-danger').text(`Error (Part ${part})`);
-    };
-
-    // --- THE WATERFALL ---
-
-    // 1. Request Part 1
-    sendVfdCommand('get-live-status', { part: 1 }, (res1) => {
-        if (res1.success && res1.data) {
-            // Update UI for Part 1
-            $('#status-freq').text(`${(res1.data[0] / 10.0).toFixed(1)} Hz`);
-            $('#status-current').text(`${(res1.data[2] / 10.0).toFixed(1)} A`);
-            $('#status-speed').text(`${res1.data[3]} RPM`);
-
-            // 2. Success! Now request Part 2
-            sendVfdCommand('get-live-status', { part: 2 }, (res2) => {
-                if (res2.success && res2.data) {
-                    // Update UI for Part 2
-                    $('#status-dc').text(`${(res2.data[0] / 10.0).toFixed(1)} V`);
-                    $('#status-temp').text(`${res2.data[2]} °C`);
-
-                    // 3. Success! Now request Part 3
-                    sendVfdCommand('get-live-status', { part: 3 }, (res3) => {
-                        if (res3.success && res3.data) {
-                            // Update UI for Part 3
-                            const faultCode = res3.data[2];
-                            if (faultCode > 0) {
-                                $('#status-fault').text(`Code ${faultCode}`).parent().show();
-                            } else {
-                                $('#status-fault').parent().hide();
-                            }
-                            // All parts successful!
-                            statusIndicator.removeClass('bg-warning').addClass('bg-success').text('Live');
-                        } else { errorCb(3); }
-                    }, () => errorCb(3));
-                } else { errorCb(2); }
-            }, () => errorCb(2));
-        } else { errorCb(1); }
-    }, () => errorCb(1));
-}
 
     // Initial UI State
     setUiConnected(false);
