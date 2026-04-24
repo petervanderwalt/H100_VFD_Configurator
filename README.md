@@ -5,8 +5,8 @@ A high-performance web-based dashboard for monitoring and configuring H100 Serie
 ## Quick Start
 
 ### 1. Prerequisites
-Ensure you have Node.js installed on your system.
-- Download it from: [nodejs.org](https://nodejs.org/)
+- **Node.js**: Download it from [nodejs.org](https://nodejs.org/)
+- **Hardware**: An RS485 to USB adapter is required to connect your computer to the VFD terminals (typically A+ and B-).
 
 ### 2. Installation
 Clone this repository and enter the directory:
